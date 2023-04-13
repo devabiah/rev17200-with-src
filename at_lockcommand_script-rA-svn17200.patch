@@ -1,0 +1,254 @@
+Index: conf/battle/misc.conf
+===================================================================
+--- conf/battle/misc.conf	(revision 17200)
++++ conf/battle/misc.conf	(working copy)
+@@ -124,3 +124,9 @@
+ // 1 = Yes
+ // 2 = Yes, when there are unread mails
+ mail_show_status: 0
++
++// [Cydh]
++// This config if active will saves player lockcommand status to global_reg_value
++// So, when player is locked and he/she relog, he/she will locked
++// (Note 1)
++reg_lockcommand: 1
+Index: conf/msg_conf/map_msg.conf
+===================================================================
+--- conf/msg_conf/map_msg.conf	(revision 17200)
++++ conf/msg_conf/map_msg.conf	(working copy)
+@@ -1410,5 +1410,12 @@
+ // @skillid (extension)
+ 1398: -- Displaying first %d partial matches:
+ 
++// Lockcommand
++1399: No player found. Use @who2 to check the online player. Usage: @lockcommand <player_name>
++1400: %s can't use atcommand now.
++1401: You can't use atcommand from now.
++1402: %s can use atcommand now.
++1403: You can use atcommand from now.
++
+ //Custom translations
+ import: conf/import/msg_conf.txt
+Index: src/map/atcommand.c
+===================================================================
+--- src/map/atcommand.c	(revision 17200)
++++ src/map/atcommand.c	(working copy)
+@@ -8796,6 +8796,57 @@
+ 	#undef MC_CART_MDFY
+ }
+ 
++/*==========================================
++ * @lockcommand by [Cydh]
++ * house.bad@gmail.com
++ * Lock player to use atcommand
++ *------------------------------------------*/
++ACMD_FUNC(lockcommand)
++{
++	char temp[CHAT_SIZE_MAX];
++	struct map_session_data* pl_sd = NULL;
++
++	nullpo_retr(-1, sd);
++	memset(temp, '\0', sizeof temp);
++
++	if (!message || !*message || sscanf(message, "%[^\n]", temp) < 1){
++		sprintf(atcmd_output, msg_txt(1399), pl_sd->status.name); // No player found. Use @who2 to check the online player. Usage: @lockcommand <player_name>
++		clif_displaymessage(fd, atcmd_output);
++		return -1;
++	}
++	
++	pl_sd = map_nick2sd(temp);
++	
++	if (pl_sd == NULL) {
++		sprintf(atcmd_output, msg_txt(1399), pl_sd->status.name); // No player found. Use @who2 to check the online player. Usage: @lockcommand <player_name>
++		clif_displaymessage(fd, atcmd_output);
++		return -1;
++	}
++
++	if(!pl_sd->state.lockcommand)
++	{
++		pl_sd->state.lockcommand = 1;
++		if (battle_config.reg_lockcommand)
++			pc_setglobalreg(sd,"LOCKCOMMAND",1);
++		sprintf(atcmd_output, msg_txt(1400), pl_sd->status.name); // %s can't use atcommand now.
++		clif_displaymessage(fd, atcmd_output);
++		sprintf(atcmd_output, msg_txt(1401), pl_sd->status.name); // You can't use atcommand from now.
++		clif_displaymessage(pl_sd->fd, atcmd_output);
++	}
++	else
++	{
++		pl_sd->state.lockcommand = 0;
++		if (battle_config.reg_lockcommand)
++			pc_setglobalreg(sd,"LOCKCOMMAND",0);
++		sprintf(atcmd_output, msg_txt(1402), pl_sd->status.name); // %s can use atcommand now.
++		clif_displaymessage(fd, atcmd_output);
++		sprintf(atcmd_output, msg_txt(1403), pl_sd->status.name); // You can use atcommand from now.
++		clif_displaymessage(pl_sd->fd, atcmd_output);
++	}
++
++	return 0;
++}
++
+ /**
+  * Fills the reference of available commands in atcommand DBMap
+  **/
+@@ -9056,7 +9107,8 @@
+ 		ACMD_DEF2("rmvperm", addperm),
+ 		ACMD_DEF(unloadnpcfile),
+ 		ACMD_DEF(cart),
+-		ACMD_DEF(mount2)
++ 		ACMD_DEF(mount2),
++		ACMD_DEF(lockcommand)
+ 	};
+ 	AtCommandInfo* atcommand;
+ 	int i;
+@@ -9185,6 +9237,9 @@
+ 
+ 	nullpo_retr(false, sd);
+ 
++	if(sd->state.lockcommand)	//disable using atcommand
++		return false;
++	
+ 	//Shouldn't happen
+ 	if ( !message || !*message )
+ 		return false;
+Index: src/map/battle.c
+===================================================================
+--- src/map/battle.c	(revision 17200)
++++ src/map/battle.c	(working copy)
+@@ -5922,6 +5922,7 @@
+ 	{ "item_restricted_consumption_type",   &battle_config.item_restricted_consumption_type,1,      0,      1,              },
+ 	{ "max_walk_path",                      &battle_config.max_walk_path,                   17,     1,      MAX_WALKPATH,   },
+ 	{ "item_enabled_npc",                   &battle_config.item_enabled_npc,                1,      0,      1,              },
++	{ "reg_lockcommand",					&battle_config.reg_lockcommand,					0,		0,		1,				},
+ };
+ #ifndef STATS_OPT_OUT
+ /**
+Index: src/map/battle.h
+===================================================================
+--- src/map/battle.h	(revision 17200)
++++ src/map/battle.h	(working copy)
+@@ -487,6 +487,7 @@
+ 	int item_restricted_consumption_type;
+ 	int max_walk_path;
+ 	int item_enabled_npc;
++	int reg_lockcommand;
+ 	} battle_config;
+ 
+ void do_init_battle(void);
+Index: src/map/pc.c
+===================================================================
+--- src/map/pc.c	(revision 17200)
++++ src/map/pc.c	(working copy)
+@@ -1159,6 +1159,9 @@
+ 		sd->mission_mobid = pc_readglobalreg(sd,"TK_MISSION_ID");
+ 		sd->mission_count = pc_readglobalreg(sd,"TK_MISSION_COUNT");
+ 	}
++	
++	if(battle_config.reg_lockcommand)
++		sd->state.lockcommand = pc_readglobalreg(sd,"LOCKCOMMAND");
+ 
+ 	//SG map and mob read [Komurka]
+ 	for(i=0;i<MAX_PC_FEELHATE;i++) //for now - someone need to make reading from txt/sql
+Index: src/map/pc.h
+===================================================================
+--- src/map/pc.h	(revision 17200)
++++ src/map/pc.h	(working copy)
+@@ -144,6 +144,7 @@
+ 		struct guild *gmaster_flag;
+ 		unsigned int prevend : 1;//used to flag wheather you've spent 40sp to open the vending or not.
+ 		unsigned int warping : 1;//states whether you're in the middle of a warp processing
++		unsigned short lockcommand;	//disable using atcommand
+ 	} state;
+ 	struct {
+ 		unsigned char no_weapon_damage, no_magic_damage, no_misc_damage;
+Index: src/map/script.c
+===================================================================
+--- src/map/script.c	(revision 17200)
++++ src/map/script.c	(working copy)
+@@ -17433,8 +17433,75 @@
+ 	}
+ 
+ 	return 0;
+ }
+ 
++/*==========================================
++ * lockcommand()
++ * Lock player to use atcommand	[Cydh]
++ *------------------------------------------*/
++BUILDIN_FUNC(lockcommand)
++{
++	char output[CHAT_SIZE_MAX];
++	struct map_session_data* sd = script_rid2sd(st);
++
++	if (sd == NULL)
++	{
++		ShowError("lockcommand: Failed to lock atcommand to player, no player attached!\n");
++		return 0;
++	}
++
++	sd->state.lockcommand = 1;
++	if (battle_config.reg_lockcommand)
++		pc_setglobalreg(sd,"LOCKCOMMAND",1);
++	sprintf(output, msg_txt(1401));	// You can't use atcommand from now.
++	clif_displaymessage(sd->fd, output);
++
++	return 0;
++}
++
++/*==========================================
++ * unlockcommand()
++ * Unlock locked player to use atcommand [Cydh]
++ *------------------------------------------*/
++BUILDIN_FUNC(unlockcommand)
++{
++	char output[CHAT_SIZE_MAX];
++	struct map_session_data* sd = script_rid2sd(st);
++
++	if (sd == NULL)
++	{
++		ShowError("unlockcommand: Failed to lock atcommand to player, no player attached!\n");
++		return 0;
++	}
++
++	sd->state.lockcommand = 0;
++	if (battle_config.reg_lockcommand)
++		pc_setglobalreg(sd,"LOCKCOMMAND",0);
++	sprintf(output, msg_txt(1403));	// You can use atcommand from now.
++	clif_displaymessage(sd->fd, output);
++
++	return 0;
++}
++
++/*==========================================
++ * checklockcommand()
++ * Check player's status of lockcommand [Cydh]
++ *------------------------------------------*/
++BUILDIN_FUNC(checklockcommand)
++{
++	struct map_session_data* sd = script_rid2sd(st);
++
++	if (sd == NULL)
++	{
++		ShowError("checklockcommand: Failed to lock atcommand to player, no player attached!\n");
++		script_pushint(st,-1);
++		return 0;
++	}
++	script_pushint(st,sd->state.lockcommand);
++
++	return 0;
++}
++
+ // declarations that were supposed to be exported from npc_chat.c
+ #ifdef PCRE_SUPPORT
+ BUILDIN_FUNC(defpattern);
+@@ -17897,5 +17965,10 @@
+ 	BUILDIN_DEF(checkquest, "i?"),
+ 	BUILDIN_DEF(changequest, "ii"),
+ 	BUILDIN_DEF(showevent, "ii"),
++
++	BUILDIN_DEF(lockcommand,""),
++	BUILDIN_DEF(unlockcommand,""),
++	BUILDIN_DEF(checklockcommand,""),
++	
+ 	{NULL,NULL,NULL},
+ };
